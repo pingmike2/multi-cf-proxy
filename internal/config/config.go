@@ -15,6 +15,8 @@ type HealthCheckConfig struct {
 	FailureThreshold      int     `json:"failure_threshold"`
 	LatencyDiscardSeconds float64 `json:"latency_discard_seconds"` // 0 = 停用
 	LatencyProbeSeconds   int     `json:"latency_probe_seconds"`   // 0 = 隨健康檢查；>0 = 獨立更高頻延遲探測
+	ProbeBatch            int     `json:"probe_batch"`             // 每批併發探測條數；0 = 全量並發
+	ProbeBatchGapMs       int     `json:"probe_batch_gap_ms"`      // 批間間隔毫秒；0 = 250
 }
 
 // Account 綁定在某個上游的入站帳密（用戶名:密碼）。

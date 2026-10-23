@@ -71,6 +71,17 @@ func main() {
 		time.Duration(c.HealthCheck.IntervalSeconds)*time.Second,
 		c.HealthCheck.FailureThreshold)
 	tm.SetLatencyMax(time.Duration(c.HealthCheck.LatencyDiscardSeconds * float64(time.Second)))
+	// 分批健康巡檢：96 條隧道同一瞬間握手會在單核機器上把 CPU 釘到 100%（持續 2-4s），
+	// 期間新連線要排隊。默認 24 條一批、批間 250ms，峰值降到約 1/4，總時長仍遠小於巡檢間隔。
+	probeBatch := c.HealthCheck.ProbeBatch
+	if probeBatch <= 0 {
+		probeBatch = 24
+	}
+	probeGapMs := c.HealthCheck.ProbeBatchGapMs
+	if probeGapMs <= 0 {
+		probeGapMs = 250
+	}
+	tm.SetProbeBatch(probeBatch, time.Duration(probeGapMs)*time.Millisecond)
 	// 經隧道 DNS 結果本機快取（0 = 停用）；>0 時同域名連線免重複 DNS 往返
 	if err := tm.SetDNSCacheTTL(time.Duration(c.DNSCacheSeconds) * time.Second); err != nil {
 		log.Fatalf("設定 DNS 快取失敗: %v", err)

@@ -135,6 +135,8 @@ type Manager struct {
 	dnsTTLSet  bool          // SetDNSCacheTTL 被呼叫過（Sync 時套用到新建隧道）
 	preferIPv6 bool          // IPv6 出口優先（Sync 時套用到新建隧道）
 	probeIvl   time.Duration // 獨立延遲探測間隔（0 = 隨健康循環；可運行中熱套）
+	probeBatch int           // 每批併發探測條數（0 = 全量並發，上游舊行為）
+	probeGap   time.Duration // 批間間隔（僅在分批時生效）
 	reload     chan struct{} // 熱套信號：Run 循環收到後重建 ticker
 	entries    map[string]*tunnelEntry
 	order      []string // 保持配置順序
@@ -201,6 +203,16 @@ func NewManager(factory Factory, probe ProbeFunc, interval time.Duration, thresh
 		reload:    make(chan struct{}, 1),
 		entries:   map[string]*tunnelEntry{},
 	}
+}
+
+// SetProbeBatch 設定健康巡檢的分批併發：每批 batch 條、批間隔 gap。
+// batch <= 0 表示沿用上游的全量並發。單核機器上全量並發會把一輪巡檢的 CPU 打成尖峰
+// （實測 96 條隧道同時握手 → 單核 100% 持續 2-4s），分批後峰值降到 1/batch 左右。
+func (m *Manager) SetProbeBatch(batch int, gap time.Duration) {
+	m.mu.Lock()
+	m.probeBatch = batch
+	m.probeGap = gap
+	m.mu.Unlock()
 }
 
 // ApplyHealth 運行中熱套健康巡檢參數（Web 設置保存即生效路徑）。
@@ -576,7 +588,13 @@ func (m *Manager) probeAll(ctx context.Context) {
 		}
 	}
 	interval := m.interval
+	batch := m.probeBatch
+	gap := m.probeGap
 	m.mu.RUnlock()
+
+	if len(ids) == 0 {
+		return
+	}
 
 	probeTimeout := interval / 2
 	if probeTimeout <= 0 || probeTimeout > 8*time.Second {
@@ -584,18 +602,41 @@ func (m *Manager) probeAll(ctx context.Context) {
 	}
 	// 並行探測：串行會讓單輪最壞 N×timeout，隧道多時健康/延遲數據嚴重滯後。
 	// RecordProbe 內部持鎖，併發安全。
-	var wg sync.WaitGroup
-	for _, id := range ids {
-		wg.Add(1)
-		go func(id string) {
-			defer wg.Done()
-			pctx, cancel := context.WithTimeout(ctx, probeTimeout)
-			latency, err := m.probe(pctx, dialers[id])
-			cancel()
-			m.RecordProbe(id, err, latency)
-		}(id)
+	//
+	// 分批併發：一輪內所有隧道同時握手在單核機器上會打出 CPU 尖峰（96 條 → 100% 持續 2-4s，
+	// 期間新連線排隊）。按 batch 條一批、批間隔 gap 攤開後，峰值降到約 1/batch，
+	// 總時長 ≈ ceil(N/batch)×(探測耗時+gap)，最壞仍遠小於巡檢間隔，頻率不受影響。
+	if batch <= 0 || batch > len(ids) {
+		batch = len(ids)
 	}
-	wg.Wait()
+	if gap < 0 {
+		gap = 0
+	}
+	for start := 0; start < len(ids); start += batch {
+		end := start + batch
+		if end > len(ids) {
+			end = len(ids)
+		}
+		var wg sync.WaitGroup
+		for _, id := range ids[start:end] {
+			wg.Add(1)
+			go func(id string) {
+				defer wg.Done()
+				pctx, cancel := context.WithTimeout(ctx, probeTimeout)
+				latency, err := m.probe(pctx, dialers[id])
+				cancel()
+				m.RecordProbe(id, err, latency)
+			}(id)
+		}
+		wg.Wait()
+		if end < len(ids) && gap > 0 {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(gap):
+			}
+		}
+	}
 }
 
 // StopAll 停止全部隧道（進程退出用）。
