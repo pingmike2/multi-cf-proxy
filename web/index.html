@@ -589,8 +589,10 @@ function openSettings() {
       <div><label for="setDNSCache">DNS 快取（秒，0=停用）</label><input type="number" id="setDNSCache" min="0" value="${s.dns_cache_seconds ?? 60}"></div>
     </div>
     <div class="row">
-      <div class="chk"><label for="setPrefer"><input type="checkbox" id="setPrefer" ${s.routing?.prefer_lowest_latency ? 'checked' : ''}> 全域延遲優先</label><span class="hint-inline">忽略帳密綁定，一律走當前延遲最低的健康出口</span></div>
+      <div class="chk"><label for="setPrefer"><input type="checkbox" id="setPrefer" onchange="syncRoutingExclusive('latency')" ${s.routing?.prefer_lowest_latency ? 'checked' : ''}> 全域延遲優先</label><span class="hint-inline">忽略帳密綁定，一律走當前延遲最低的健康出口</span></div>
+      <div class="chk"><label for="setPreferV6"><input type="checkbox" id="setPreferV6" onchange="syncRoutingExclusive('v6')" ${s.routing?.prefer_ipv6_egress ? 'checked' : ''}> IPv6 出口優先</label><span class="hint-inline">域名解析結果優先走 IPv6，多帳號各自獨立出口 IP</span></div>
     </div>
+    <p class="hint" id="routingHint" style="margin:6px 0 0">兩者互斥：延遲優先會把全部帳號擠到同一個最快出口（IP 池退化為 1 個）；IPv6 出口優先則每個帳號保留自己的 v6 出口（維持多 IP 池）。同一時刻只能開啟一個。</p>
     <div style="margin-top:14px"><button class="ghost" id="btn-set" onclick="saveSettings()">保存設置</button></div>
     <p class="hint">全部設置保存後即時生效（含端口與健康參數）；若變更了 Web 監聽地址，請以新地址重新開啟管理頁。延遲連續超標會視為探測失敗並重建；域名 DNS 結果經 WARP 解析後於本機快取指定秒數（0=每次都解析）；開啟全域延遲優先後所有帳號走當前延遲最低（EMA 平滑）的健康出口，出口 IP 會隨延遲變化而切換。</p>
     <hr style="border:none;border-top:1px solid var(--line);margin:18px 0 6px">
@@ -600,6 +602,7 @@ function openSettings() {
       <div style="flex:0 0 auto"><button class="ghost" id="btn-pw" onclick="changePw()">修改密碼</button></div>
     </div>`,
     `<button class="ghost" onclick="closeModal()">關閉</button>`, true);
+  syncRoutingExclusive('init');
 }
 
 async function autoReg() {
@@ -623,6 +626,28 @@ async function importConf() {
   } catch (e) { toast(false, e.message); }
   btnBusy(b, false);
 }
+// syncRoutingExclusive 兩個選路開關互斥：勾選其一即自動取消另一個並更新說明。
+// 原因：延遲優先會把全部帳號收斂到同一最快出口，使多帳號的獨立 v6 出口 IP 池退化為單一 IP；
+// IPv6 出口優先則每個帳號保留各自出口。同時開啟語意衝突，故強制二選一。
+function syncRoutingExclusive(which) {
+  const lat = $('setPrefer'), v6 = $('setPreferV6'), hint = $('routingHint');
+  if (which === 'latency' && lat.checked && v6.checked) {
+    v6.checked = false;
+  } else if (which === 'v6' && v6.checked && lat.checked) {
+    lat.checked = false;
+  }
+  if (lat.checked) {
+    hint.innerHTML = '目前：<b>全域延遲優先</b> —— 所有帳號收斂到同一最快出口，出口 IP 池退化為 1 個（延遲最低）。';
+    hint.style.color = '#c60';
+  } else if (v6.checked) {
+    hint.innerHTML = '目前：<b>IPv6 出口優先</b> —— 每個帳號保留自己的 v6 出口，維持多 IP 池；目標不支持 IPv6 時自動回落 v4（回落後共用同一出口）。';
+    hint.style.color = '#2a7';
+  } else {
+    hint.innerHTML = '目前：<b>兩者皆關</b> —— 走帳號綁定的上游；出口 IP 仍按 IPv6 優先解析（未啟用該開關時候選順序由系統決定）。';
+    hint.style.color = '';
+  }
+}
+
 async function saveSettings() {
   const b = $('btn-set'); btnBusy(b, true);
   try {
@@ -637,6 +662,7 @@ async function saveSettings() {
       },
       routing: {
         prefer_lowest_latency: $('setPrefer').checked,
+        prefer_ipv6_egress: $('setPreferV6').checked,
       },
     });
     toast(true, (r.applied && r.applied.length) ? r.applied.join('；') : '設置已保存並即時生效');

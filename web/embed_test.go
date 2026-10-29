@@ -52,6 +52,8 @@ func TestIndexHTMLContract(t *testing.T) {
 		{"延遲探測間隔設置輸入", "setProbe"},
 		// v1.6.5：延遲優選 + 全設置熱重載
 		{"全域延遲優先設置鍵", "prefer_lowest_latency"},
+		{"IPv6 出口優先設置鍵", "prefer_ipv6_egress"},
+		{"選路互斥提示", "syncRoutingExclusive"},
 		{"全域延遲優先開關輸入", "setPrefer"},
 		{"套用報告展示鍵", "applied"},
 		// v1.6.6：重建反饋 + 實際出口可觀測

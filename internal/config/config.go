@@ -39,6 +39,12 @@ type Upstream struct {
 // RoutingConfig 選路偏好參數。
 type RoutingConfig struct {
 	PreferLowestLatency bool `json:"prefer_lowest_latency"` // 全域延遲優先：所有帳號一律走當前延遲最低的健康出口（EMA 平滑後排序）
+	// PreferIPv6Egress 撥號時優先使用 IPv6 目標地址。
+	// WARP 的 IPv4 出口 IP 由 Cloudflare 按「源 IP」分配，與帳號無關（多帳號共用同一
+	// 104.28.x.x 段）；而 IPv6 出口按帳號獨立分配（2606:4700:110:xxxx → 2a09:bacx:...）。
+	// 因此只有當目標支持 IPv6 時，多帳號才構成真正的「多出口 IP 池」。
+	// 開啟後：域名解析結果中 IPv6 地址排前，僅在 IPv6 全部撥號失敗時才回落 IPv4。
+	PreferIPv6Egress bool `json:"prefer_ipv6_egress"`
 }
 
 // Config 頂層配置，持久化為單一 JSON 文件。
@@ -117,6 +123,11 @@ func (c *Config) Validate() error {
 	if c.HealthCheck.LatencyProbeSeconds < 0 {
 		return fmt.Errorf("health_check.latency_probe_seconds 不可小於 0")
 	}
+	// 選路互斥：全域延遲優先會把所有帳號收斂到同一最快出口，使多帳號的
+	// 獨立 IPv6 出口 IP 池退化為單一 IP；與 IPv6 出口優先語意衝突，只能二選一。
+	if c.Routing.PreferLowestLatency && c.Routing.PreferIPv6Egress {
+		return fmt.Errorf("routing.prefer_lowest_latency 與 routing.prefer_ipv6_egress 互斥：延遲優先會把全部帳號擠到同一出口（IP 池退化為 1 個），請只開啟其中一個")
+	}
 	seen := map[string]bool{}
 	for i, u := range c.Upstreams {
 		if u.ID == "" {
@@ -169,6 +180,11 @@ func Load(path string) (*Config, error) {
 	}
 	// routing.switch_margin_ms 已於 v1.6.9 移除；存量配置中的該鍵為未知鍵，靜默忽略。
 	c.FillDefaults()
+	// 啟動時即校驗：手改配置若含互斥/非法組合，寧可啟動失敗也不要靜默帶病運行
+	// （例如同時開啟延遲優先與 IPv6 出口優先，會讓帳號池悄悄退化）。
+	if err := c.Validate(); err != nil {
+		return nil, fmt.Errorf("配置 %s 校驗失敗: %w", path, err)
+	}
 	return &c, nil
 }
 

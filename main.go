@@ -34,6 +34,7 @@ type runtimeSnap struct {
 	probe     int
 	dns       int
 	prefer    bool
+	preferV6  bool
 	socks     string
 	httpA     string
 	webA      string
@@ -82,6 +83,8 @@ func main() {
 	collector := stats.NewCollector()
 	svc := dispatcher.NewService(authStore, dispatcher.NewRegistry(tm), collector)
 	svc.SetLatencyRouting(c.Routing.PreferLowestLatency)
+	// IPv6 出口優先：多帳號獨立出口 IP 池的前提（v4 出口與帳號無關、v6 按帳號獨立）
+	tm.SetPreferIPv6Egress(c.Routing.PreferIPv6Egress)
 
 	// 三個監聽服務（支持端口熱重載）
 	ls := listen.New()
@@ -114,6 +117,7 @@ func main() {
 			probe:     c.HealthCheck.LatencyProbeSeconds,
 			dns:       c.DNSCacheSeconds,
 			prefer:    c.Routing.PreferLowestLatency,
+			preferV6:  c.Routing.PreferIPv6Egress,
 			socks:     c.ListenSocks5,
 			httpA:     c.ListenHTTP,
 			webA:      c.ListenWeb,
@@ -143,6 +147,14 @@ func main() {
 		if cur.prefer != next.prefer {
 			svc.SetLatencyRouting(next.prefer)
 			notes = append(notes, "延遲優選已即時套用")
+		}
+		if cur.preferV6 != next.preferV6 {
+			tm.SetPreferIPv6Egress(next.preferV6)
+			if next.preferV6 {
+				notes = append(notes, "IPv6 出口優選已開啟")
+			} else {
+				notes = append(notes, "IPv6 出口優選已關閉")
+			}
 		}
 		for _, sw := range []struct{ name, cur, next string }{
 			{"SOCKS5", cur.socks, next.socks},

@@ -44,6 +44,7 @@ type wireTunnel struct {
 	net              *netstack.Net
 	resolvedEndpoint string    // 每次 Start/Rebuild 重新解析出的 IP:port
 	dns              *dnsCache // 經隧道解析結果的本機快取（消除重複 DNS 往返）
+	preferIPv6       bool      // 撥號時 IPv6 目標地址優先（多帳號獨立出口 IP 池的前提）
 }
 
 // dnsTTLSetter 可接收 DNS 快取 TTL 的隧道（Manager 運行時傳播）。
@@ -92,6 +93,13 @@ func WireFactory(u *config.Upstream) (Tunnel, error) {
 		return tn.LookupContextHost(ctx, host)
 	})
 	return w, nil
+}
+
+// setPreferIPv6 熱套「IPv6 出口優先」開關（Manager 傳播調用；併發安全）。
+func (w *wireTunnel) setPreferIPv6(on bool) {
+	w.mu.Lock()
+	w.preferIPv6 = on
+	w.mu.Unlock()
 }
 
 // SetDNSCacheTTL 調整本隧道的 DNS 快取 TTL（0 = 停用；Manager 傳播調用）。
@@ -213,7 +221,7 @@ func (w *wireTunnel) DialContext(ctx context.Context, network, addr string) (net
 		return nil, fmt.Errorf("隧道 %s 未運行", w.id)
 	}
 
-	candidates, err := resolveTarget(ctx, cache, addr)
+	candidates, err := resolveTargetPref(ctx, cache, addr, w.preferIPv6)
 	if err != nil {
 		return nil, err
 	}

@@ -133,6 +133,7 @@ type Manager struct {
 	latencyMax time.Duration // 0 = 停用；超過時視為一次探測失敗（可運行中熱套）
 	dnsTTL     time.Duration // 經隧道 DNS 快取 TTL（0 = 停用）
 	dnsTTLSet  bool          // SetDNSCacheTTL 被呼叫過（Sync 時套用到新建隧道）
+	preferIPv6 bool          // IPv6 出口優先（Sync 時套用到新建隧道）
 	probeIvl   time.Duration // 獨立延遲探測間隔（0 = 隨健康循環；可運行中熱套）
 	reload     chan struct{} // 熱套信號：Run 循環收到後重建 ticker
 	entries    map[string]*tunnelEntry
@@ -166,6 +167,25 @@ func (m *Manager) SetDNSCacheTTL(d time.Duration) error {
 		}
 	}
 	return nil
+}
+
+// SetPreferIPv6Egress 設定「撥號時 IPv6 目標地址優先」。
+// 對既有與後續新建的隧道同時生效（重啟後由 main 依配置再次套用）。
+// 意義：WARP 的 IPv4 出口由 CF 按源 IP 分配（多帳號共用），IPv6 出口按帳號獨立分配；
+// 只有目標支持 IPv6 時多帳號才是真正的多出口 IP 池。
+func (m *Manager) SetPreferIPv6Egress(on bool) {
+	m.mu.Lock()
+	m.preferIPv6 = on
+	targets := make([]*wireTunnel, 0, len(m.entries))
+	for _, e := range m.entries {
+		if w, ok := e.tunnel.(*wireTunnel); ok {
+			targets = append(targets, w)
+		}
+	}
+	m.mu.Unlock()
+	for _, w := range targets {
+		w.setPreferIPv6(on)
+	}
 }
 
 // NewManager 建立管理器。interval 為探測週期，threshold 為不健康判定閾值。
@@ -237,6 +257,9 @@ func (m *Manager) Sync(ctx context.Context, upstreams []*config.Upstream) error 
 			if m.dnsTTLSet {
 				if s, ok := t.(dnsTTLSetter); ok {
 					_ = s.SetDNSCacheTTL(m.dnsTTL)
+				}
+				if w, ok := t.(*wireTunnel); ok {
+					w.setPreferIPv6(m.preferIPv6)
 				}
 			}
 			e = &tunnelEntry{tunnel: t}
